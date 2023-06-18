@@ -1,0 +1,270 @@
+## Kafka command line codes
+
+What is Apache Kafka?
+Apache Kafka is a messaging broker.
+OR (high level definition)
+Apache Kafka is a horizontally scalable, fault-tolerant, distributed streaming platform and 
+	it is consciously designed for building real-time streaming data architecture.
+Broker responsibilities: 
+	- Receive messages from the producers and acknowledge the successful receipt
+	- Store the messages (for future use by consumers) in a log file to safeguard it from potential loss.
+	- Deliver the messages to the consumers when they request it
+
+Three parts: 
+	1) Kafka Storage Architecture
+	2) Kafka Cluster Architecture
+	3) Work Distribution Architecture
+
+
+# Note: The below commands were used on local machine cluster. Can be replicated for cloud.
+# We are also using confluent kafka community edition
+
+# Create/Start a Kafka cluster
+bin\windows\zookeeper-server-start.bat [enter config file details here]
+-- Step 1: Start Zookeeper (kinda db for clusters)
+bin\windows\zookeeper-server-start.bat etc\kafka\zookeeper.properties
+-- for RAW\custom kafka setup 
+bin\windows\zookeeper-server-start.bat config\zookeeper.properties
+
+-- Step 2: Start the kafka broker
+bin\windows\kafka-server-start.bat etc\kafka\server-0.properties
+
+-- Create new topic (on local machine)
+bin\windows\kafka-topics.bat --create --topic test --partitions 1 --replication-factor 1 
+		--bootstrap-server(aka cluster co-ordinates) localhost:9092
+		(get localhost port number - cmd --> netstat -a)
+
+-- Send data to the newly created "topic" using console producer
+bin\windows\kafka-console-producer.bat --topic [topic_name] --broker-list(aka cluster co-ordinates)  ..\data\[file_path]
+bin\windows\kafka-console-producer.bat --topic test --broker-list localhost:9092 ..\data\[file_path]
+
+
+-- Step 3: Create a Consumer (read same topic from same cluster)
+bin\windows\kafka-console-consumer.bat --topic test --bootstrap-server localhost:9092 --from-beginning
+
+
+## Multi Node Kafka Cluster
+-- To cleanup directory
+\tmp on directory and delete folders 
+
+For multi-node kafka cluster setup we create multiple server properties files and edit conflicting info - id, listerners (unique port for each) and log.dirs.. and etc as needed
+bin\windows\kafka-server-start.bat etc\kafka\server-0.properties
+bin\windows\kafka-server-start.bat etc\kafka\server-1.properties
+bin\windows\kafka-server-start.bat etc\kafka\server-2.properties
+
+
+## Create Consumer Groups 
+bin\windows\kafka-console-consumer.bat --bootstrap-server localhost:9092 --topic stock-ticks --from-beginning --group group1
+
+-- working sending producer codeline
+bin\windows\kafka-console-producer.bat --topic stock-ticks --broker-list localhost:9092 < C:\kafka\confluent-7.4.0\data\sample1.csv
+
+
+## Dumping Kafka log files
+bin\windows\kafka-dump-log.bat --files C:\tmp\kafka-logs-0\stock-ticks-2\00000000000000000000.log
+bin\windows\kafka-dump-log.bat --files C:\tmp\kafka-logs-1\stock-ticks-1\00000000000000000000.log
+bin\windows\kafka-dump-log.bat --files C:\tmp\kafka-logs-2\stock-ticks-0\00000000000000000000.log
+
+
+-- To avoid typing absolute part all the time, we set the KAFKA_HOME environment variable. Here is the command.
+-- First setup environment_variable: setx KAFKA_HOME C:\kafka\confluent-7.4.0	(windows)
+
+
+
+Part 1) Kafka Storage Architecture
+This discussion will help you to understand some core concepts such as Kafka topics, logs, partitions,
+replication factor, segments, offsets, and offset-index.
+
+
+What is replication factor? Number of Copies for each Partition
+Number of Replicas (15) = Partitions (5) * Replication (3)
+
+What are Leaders and Followers?
+We can classify topic partition replicas into two categories. Leader partitions and Follower partitions.
+To get which are leader and followers, we can use the following command:
+kafka-topics.bat --describe --zookeeper localhost:2181 --topic invoice
+
+Regarding Kafka broker, being a 'leader' means one thing. The leader is responsible for all the requests
+from the producers and consumers.
+
+
+What is kafka Log Segment?
+The messages are stored within the directories in the log files. 
+	However, instead of creating one large file in the partition directory, Kafka creates several smallerfiles.
+
+That means the Kafka log files is split into smaller files known as segments.	
+
+To locate a specific message, we should know at least three things:
+	- Topic Name
+	- Partition Number
+	- Offset Number
+	
+
+
+Part 2) Kafka Cluster Architecture
+This discussion will help you understand some concepts associated with Cluster formation, Zookeeper,
+and the Controller.
+
+Kafka is a masterless cluster... active brokers are maintianed in the zookeeper
+
+Kafka is a master less cluster, and the list of active brokers is maintained in the zookeeper.
+However, we still need someone to perform the routine administrative activities such as monitoring the
+list of active brokers and reassigning the work when an active broker leaves the cluster.
+All those activities are performed by a 'controller' in the Kafka cluster.
+The controller is not a master. It is simply a broker that is elected as a controller to pick up some extra responsibilities.
+That means, the controller also acts as a regular broker. So, if you have a single node cluster, it serves as a controller as well as a broker.
+However, there is only one controller in the Kafka cluster at any point in time. The controller is responsible
+for monitoring the list of active brokers in the zookeeper. When the controller notices that a broker
+left the cluster, it knows that it is time to reassign some work to the other brokers. The controller election is is straightforward.
+The first broker that starts in the cluster becomes the controller by creating an ephemeral (controller)
+node in the zookeeper. When other brokers start, they also try to create this node, but they receive an exception as 'node already exists,'
+which means that the controller is already elected. In that case, they start watching the controller more than the zookeeper to disappear.
+When the controller dies, the ephemeral node disappears. Now, every broker again tries to create the controller node in the zookeeper, but only one succeeds, and
+others get an exception once again. This process ensures that there is always a controller in that cluster,
+and there exists only one controller.
+
+
+
+zookeeper is the database of the Kafka cluster control information.
+
+-- Start Zookeeper
+C:\kafka\confluent-74\bin\windows\zookeeper-shell.bat localhost:2181
+-- Inside Zookeeper cmd (using these we can also understand how kafka maintains the list of brokers]
+	ls / --> whats inside db
+	ls /brokers --> check brokers 
+	ls /brokers/ids --> brokers ids
+	
+	ls /
+	get /controller --> get controller
+
+
+Kafka producer and consumer always interact with the leader not follower... 
+	and that is one of the responsibilities of the leader along with sending and receiving messages from consumer and producer
+	
+'Followers' do not serve producer and consumer requests. 
+Their only job is to copy messages from the leader and stay up to date with all the messages.
+
+-- The ISR List - In Sync Replica
+The method of copying messages that the follower appears full proof.
+However, some followers can still fail to stay in sync for various reasons. Two common reasons of network
+congestion and broker failures.
+
+Network congestion can slow down replication, and the followers may start falling behind.
+Right? When a follower broker crashes, all replicas on that broker will begin falling behind
+until we restart the follower broker and they can start replicating again, right? Since the replicas may
+be falling behind, the leader has one more important job to maintain a list of In-Sync-Replicas(ISR). This
+list is known as the ISR the list of the partition and persisted in the zookeeper. And this list is maintained
+by the leader broker. The ISR list is very critical.
+Why?
+Because all the followers in that list are known to be in sync with the leader, and they are an excellent
+candidate to be elected as a new leader
+when something wrong happens to the current leader. And that makes the ISR list a critical thing. However,
+there is one more question that follows.
+
+You might wonder, how do a leader would know if the follower is in sync or still lagging? Let's try to
+understand that. The follower will connect to the leader and request for the messages.
+The first request would ask the leader to send messages is starting from the offset zero. Assume
+that the leader has got ten messages, so it sends all of them to the follower.
+
+The follower restores them and do the replica and again requests for new messages starting from offset
+10.
+In this case, since the follower asked for offset 10, that means a leader can safely assume that the
+follower has already persisted all the earlier messages.
+So by looking at the last offsets requested by the follower, the leader can tell how far behind is the replica.
+
+Now the ISR list is easy to maintain. If the replica is 'not too far,'
+the leader will add the follower to the ISR list, or else the followed is removed from the ISR list.
+That means the ISR list is dynamic and the followers keep getting added and removed from the ISR list
+depending on how far they maintain their in0sync status. However,
+there is a catch here.
+
+How do we define the 'not too far?'
+As a matter of fact the following will always be a little behind and the leader, and that's obvious because
+follower needs to ask for the message from the leader, received the message over the network,
+store them into the replica and then ask for more.
+
+All these activities take some time. And hence, the leader gives them some minimum time as a margin to
+accomplish this.
+
+That is where the notion of 'not too far' arrives.
+The default value of 'not too far' is 10 seconds.
+However, you can increase or decrease it using Kafka configurations. 
+So the replica is kept in the ISR list if they are not more than 10 seconds behind the leader.
+
+That means, if the replica has requested the most recent message in the last 10 seconds, they deserve
+to be in the ISR. If not, the leader removes the replica from the ISR list.
+
+-- Committed Vs Un-Committed Records
+The data is considered committed when it is written to all the in-sync replicas.
+
+-- Minimum ISR List (minimum in sync replicas).
+The data is considered committed when it is written to all the in-sync replicas.
+Now let's assume that we start with three replicas and all of them are healthy enough to be in the ISR.
+However, after some time, two of them failed,
+and as a result of that, the leader will remove them from the ISR. In this case, even though we configured
+the topic to have three replicas, we are left with the single in-sync replica
+that is the leader itself.
+
+Now the data is considered committed when it is written to all in-sync replicas, even when all means
+just one replica(the leader itself), right? It is a risky scenario for data consistency because data could
+be lost if we lose the leader. Kafka protects this scenario by setting the minimum number of in-sync replicas
+for a topic. If you would like to be sure that committed data is written to at least two replicas,
+you need to set the minimum number of in-sync replicas as two.
+
+However, there is a side effect of this setting.
+If a topic has three replicas and you set minimum in-sync replicas to two, then you can only write to
+a partition in the topic if at least two out of the three replicas are in-sync. 
+When at least two replicas are not in sync, the broker will not accept any messages and respond with 'not enough replicas'
+exception.
+
+In other words, the leader becomes a read only partition.
+You can read, but you cannot write until you bring another replica online and wait for it to catch
+up and get in sync.
+
+Part 3) Work Distribution Architecture
+Finally, will tie up these two architectures and try to understand how the work is distributed in the
+Kafka cluster. In this part, we learn some concepts such as Leaders, Followers, In Sync Replicas, committed and uncommitted
+messages.
+
+
+## Kafka Producer APIs
+-- Creating Kafka Producer
+(Using problem solution approach in this case)
+Problem Statement: Create a simplest possible kafka producer code that sends one millions string messages to a kafka topic?
+Soln: Project 02-HelloProducer
+
+-- Creating Multi-Threaded Kafka Producer
+Problem Statement: Create a multi-threaded kafka producer that sends data from a list of files to a kafka topic such that independent thread streams each file.
+Soln: Project 03-multi-threading
+
+-- At Least Once VS At Most Once ... Exactly Once
+
+-- Transactions in Kafka Producer
+
+
+
+## JSON Serializer vs Avro Serializer
+-- JSON serialized messages are large in size.
+The JSON format includes field names with each data element.
+These field names may increase the size of your serialized messages by 2X or more,
+and ultimately, it causes more delays at the network layer to transmit these messages.
+
+	The alternative is the Avro Serializer. 
+	The Avro is a binary format, and the serialization is much more compact.
+	So, if you are using Avro serialization, your messages will be shorter over the network,
+	giving you a more substantial network bandwidth.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
